@@ -142,9 +142,10 @@ function buildReportContext(body: ReportRequest): string {
     const date = (m.published_at || m.created_at || "").split("T")[0];
     if (date) byDate[date] = (byDate[date] || 0) + 1;
 
-    const meta = m.raw_metadata;
-    const authorName = (meta?.author || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername) as string | undefined;
-    if (!authorName) return;
+    const meta = m.raw_metadata as Record<string, unknown> | null;
+    const rawAuth = meta?.author as any;
+    const authorName = (typeof rawAuth === "string" ? rawAuth : (rawAuth?.name || rawAuth?.username || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername)) as string | undefined;
+    if (!authorName || typeof authorName !== "string") return;
 
     const key = `${authorName}@${source}`;
     if (!authorMap[key]) {

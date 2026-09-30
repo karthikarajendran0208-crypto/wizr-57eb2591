@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.50.0";
 
@@ -126,6 +127,8 @@ const ACTOR_IDS: Record<string, string> = {
   reddit_comments: "easyapi/reddit-comments-search-scraper",
   // LinkedIn: harvestapi/linkedin-post-search (no cookies required, $2/1000 results)
   linkedin: "harvestapi/linkedin-post-search",
+  // Google News: lhotanok/google-news-scraper
+  google_news: "lhotanok/google-news-scraper",
 };
 
 // Legacy Facebook actors array (kept for backwards compatibility)
@@ -140,7 +143,7 @@ const DISABLED_PLATFORMS: Record<string, string> = {
 };
 
 interface ScrapeRequest {
-  platform: "twitter" | "facebook" | "tiktok" | "instagram" | "linkedin" | "youtube" | "youtube_shorts" | "reddit" | "reddit_comments";
+  platform: "twitter" | "facebook" | "tiktok" | "instagram" | "linkedin" | "youtube" | "youtube_shorts" | "reddit" | "reddit_comments" | "google_news";
   query?: string;
   username?: string;
   hashtag?: string;
@@ -153,6 +156,9 @@ interface ScrapeRequest {
   // YouTube-specific filters
   youtubeUploadDate?: "lastHour" | "today" | "thisWeek" | "thisMonth" | "thisYear";
   youtubeSortType?: "relevance" | "popularity";
+  // Global date filters
+  dateFrom?: string;
+  dateTo?: string;
 }
 
 serve(async (req) => {
@@ -179,6 +185,8 @@ serve(async (req) => {
       maxResults = 50,
       youtubeUploadDate,
       youtubeSortType,
+      dateFrom,
+      dateTo,
     }: ScrapeRequest = await req.json();
 
     if (!platform) {
@@ -207,11 +215,22 @@ serve(async (req) => {
 
     switch (platform) {
       case "twitter":
-        // apidojo/tweet-scraper - uses 'searchTerms' array (multiple terms searched in parallel)
-        // Split comma-separated terms into individual search terms for broader coverage
-        const searchTerms = query ? query.split(",").map((t: string) => t.trim()).filter(Boolean) : [];
+        // Check if this is an AI-generated boolean query
+        const isAdvancedTwitter = query && (query.includes(" AND ") || query.includes(" OR ") || query.includes('"') || query.includes('('));
+        
+        let searchTerms;
+        if (isAdvancedTwitter) {
+          searchTerms = [query];
+        } else {
+          // Legacy behavior: Split comma-separated terms into individual search terms
+          searchTerms = query ? query.split(",").map((t: string) => {
+            const term = t.trim();
+            return `("${term}" OR @${term.replace(/\s+/g, "")}) -filter:replies -filter:links min_faves:1`;
+          }).filter(Boolean) : [];
+        }
+        
         input = {
-          searchTerms: searchTerms.length > 0 ? searchTerms : ["Actinver"],
+          searchTerms: searchTerms.length > 0 ? searchTerms : [`("Actinver" OR @Actinver) -filter:replies -filter:links min_faves:1`],
           maxItems: maxResults,
           sort: "Latest + Top", // Run both simultaneously for maximum coverage
           tweetLanguage: "es",
@@ -223,22 +242,15 @@ serve(async (req) => {
         // Use page scraper only for specific username/page searches
         // Fallback logic is handled after the switch statement
         if (query) {
-          // Calculate date range: last 30 days to ensure recent posts
-          const today = new Date();
-          const thirtyDaysAgo = new Date(today);
-          thirtyDaysAgo.setDate(today.getDate() - 30);
-          
-          const formatDate = (d: Date) => d.toISOString().split("T")[0]; // yyyy-mm-dd
-          
-          // Store Facebook-specific inputs for fallback logic
-          // Primary actor (powerai) input format
           input = {
             query: query,
             maxResults: maxResults,
             recent_posts: true,
-            start_date: formatDate(thirtyDaysAgo),
-            end_date: formatDate(today),
           };
+          
+          const formatDate = (d: Date) => d.toISOString().split("T")[0]; // yyyy-mm-dd
+          if (dateFrom) input.start_date = formatDate(new Date(dateFrom));
+          if (dateTo) input.end_date = formatDate(new Date(dateTo));
           
           // Mark as Facebook query for fallback handling
           actorId = "__FACEBOOK_WITH_FALLBACK__";
@@ -279,7 +291,7 @@ serve(async (req) => {
         input = {
           keywords,
           // Increase results for better coverage - TikTok filtering is done client-side
-          maxResults: Math.min(Math.max(maxResults, 200), 1000),
+          maxResults: maxResults,
           // 30 = last month (more relevant for monitoring)
           publish_time: 30,
           // 3 = publish time (newest first)
@@ -432,8 +444,21 @@ serve(async (req) => {
             time: "all",
           };
         } else if (query) {
+          const isAdvancedReddit = query.includes(" AND ") || query.includes(" OR ") || query.includes('"');
+          
+          let redditSearches;
+          if (isAdvancedReddit) {
+            redditSearches = [query];
+          } else {
+            // Process comma-separated queries into advanced Reddit search strings
+            redditSearches = query.split(",").map((t: string) => {
+              const term = t.trim();
+              return `title:"${term}" OR selftext:"${term}"`;
+            }).filter(Boolean);
+          }
+          
           input = {
-            searches: [query],
+            searches: redditSearches.length > 0 ? redditSearches : [`title:"Actinver" OR selftext:"Actinver"`],
             type: "post",
             searchPosts: true,
             searchCommunities: false,
@@ -475,11 +500,17 @@ serve(async (req) => {
         const linkedinQueries: string[] = [];
         
         if (query) {
-          // Split by comma and add each as a separate query
-          query.split(",").forEach((term: string) => {
-            const cleaned = term.trim();
-            if (cleaned) linkedinQueries.push(cleaned);
-          });
+          const isAdvancedLinkedin = query.includes(" AND ") || query.includes(" OR ") || query.includes('"');
+          
+          if (isAdvancedLinkedin) {
+            linkedinQueries.push(query);
+          } else {
+            // Split by comma and add each as a separate query
+            query.split(",").forEach((term: string) => {
+              const cleaned = term.trim();
+              if (cleaned) linkedinQueries.push(cleaned);
+            });
+          }
         }
         
         if (companyUrl) {
@@ -499,6 +530,21 @@ serve(async (req) => {
           searchQueries: linkedinQueries, // Array of search queries (required)
           maxPosts: maxResults,
           sortBy: "date", // Sort by newest first
+        };
+        break;
+
+      case "google_news":
+        if (!query) {
+          throw new Error("Google News requires a search query.");
+        }
+        
+        input = {
+          query: query,
+          maxItems: maxResults,
+          language: "es", // Spanish
+          country: "MX", // Mexico (default, can be adjusted)
+          extractImages: true,
+          extractArticles: false, // Don't scrape full text, just metadata to save time/cost
         };
         break;
     }
@@ -853,9 +899,8 @@ type MetaFastFailResult = {
   reason?: string;
 };
 
-// Detects fast-fail for both Facebook and Instagram
 async function detectMetaFastFail(apiToken: string, runId: string, platform: string): Promise<MetaFastFailResult> {
-  const delays = [800, 1500, 2000, 2500, 3000];
+  const delays = [1000, 2000, 2500];
   const startedAt = Date.now();
 
   for (const d of delays) {

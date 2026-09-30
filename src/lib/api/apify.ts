@@ -110,9 +110,10 @@ export const apifyApi = {
     taggedUsername?: string; // Instagram: fetch posts where this user is tagged
     captionFilter?: string; // Instagram: filter results to only include posts mentioning this term
     maxResults?: number;
-    // YouTube-specific native filters
     youtubeUploadDate?: "lastHour" | "today" | "thisWeek" | "thisMonth" | "thisYear";
     youtubeSortType?: "relevance" | "popularity";
+    dateFrom?: string;
+    dateTo?: string;
   }): Promise<ApifyResponse<ScrapeStartResponse>> {
     const result = await invokeEdgeFunction<ScrapeStartResponse>("apify-scrape", params, 45000);
 

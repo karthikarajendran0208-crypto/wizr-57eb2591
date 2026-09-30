@@ -30,6 +30,7 @@ import RankingsPage from "./pages/dashboard/RankingsPage";
 import PerformancePage from "./pages/dashboard/PerformancePage";
 import DashboardHomePage from "./pages/dashboard/DashboardHomePage";
 import AnalisisPage from "./pages/dashboard/AnalisisPage";
+import SearchPage from "./pages/dashboard/Search";
 
 import { Loader2 } from "lucide-react";
 
@@ -114,6 +115,7 @@ const AppRoutes = () => {
       >
         <Route index element={<DashboardHomePage />} />
         <Route path="inicio" element={<DashboardHomePage />} />
+        <Route path="search" element={<SearchPage />} />
         <Route path="analizar" element={<AnalisisPage />} />
         {/* Rutas antiguas: se conservan como vistas del destino unificado */}
         <Route path="panorama" element={<Navigate to="/dashboard/analizar?v=panorama" replace />} />

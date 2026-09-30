@@ -204,9 +204,24 @@ export function useSmartReport() {
       const isKnownMedia = isKnownMediaDomain(normalizedPlatform);
 
       // Heurística híbrida
-      let authorName = (meta?.author || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername) as string | undefined;
+      let authorName: string | undefined;
+      const rawAuthor = meta?.author;
+      if (typeof rawAuthor === "string" && rawAuthor.trim()) {
+        authorName = rawAuthor.trim();
+      } else if (typeof rawAuthor === "object" && rawAuthor !== null) {
+        authorName = ((rawAuthor as any).name || (rawAuthor as any).username || "") as string;
+        if (!authorName.trim()) authorName = undefined;
+      }
+      if (!authorName) {
+        const alt = meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername;
+        if (typeof alt === "string" && alt.trim()) authorName = alt.trim();
+      }
+
       let username = (meta?.authorUsername || meta?.author_username || "") as string;
-      const avatarUrl = (meta?.authorAvatarUrl || meta?.author_avatar_url || meta?.profileImageUrl || null) as string | null;
+      if (!username && typeof rawAuthor === "object" && rawAuthor !== null) {
+        username = ((rawAuthor as any).username || (rawAuthor as any).name || "") as string;
+      }
+      const avatarUrl = (meta?.authorAvatarUrl || meta?.author_avatar_url || meta?.profileImageUrl || (typeof rawAuthor === "object" && rawAuthor !== null ? (rawAuthor as any).avatarUrl : null) || null) as string | null;
 
       if (!authorName) {
         const inferred = inferAuthorFromText(m.title, m.description, m.url);
@@ -214,9 +229,9 @@ export function useSmartReport() {
       }
 
       // Sanitize: descarta autores claramente inválidos (slugs de URL, numéricos, archivos)
-      const isJunkAuthor = (n?: string) => {
-        if (!n) return true;
-        const x = String(n).trim();
+      const isJunkAuthor = (n?: any) => {
+        if (!n || typeof n !== "string") return true;
+        const x = n.trim();
         if (x.length < 3) return true;
         if (/^\d+$/.test(x)) return true;
         if (/\.(php|html?|aspx?)$/i.test(x)) return true;
@@ -232,7 +247,7 @@ export function useSmartReport() {
       const goToInfluencer = isSocial && Boolean(authorName);
       const goToMedia = !goToInfluencer && (isKnownMedia || (!isSocial && Boolean(m.title)));
 
-      if (goToInfluencer && authorName) {
+      if (goToInfluencer && authorName && typeof authorName === "string") {
         const key = `${authorName.toLowerCase()}@${normalizedPlatform}`;
         if (!authorMap[key]) {
           authorMap[key] = { name: authorName, username: username || authorName, avatarUrl, platform: normalizedPlatform, mentions: 0, sentiments: [], engagement: 0 };

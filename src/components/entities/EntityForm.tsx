@@ -47,7 +47,7 @@ const PLATFORM_OPTIONS: { id: PlatformId; label: string; icon: string; hint: str
 interface EntityFormProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (data: EntityFormData & { palabras_clave: string[]; aliases: string[]; platform_keywords: Record<string, string[]> }) => void;
+  onSubmit: (data: EntityFormData & { palabras_clave: string[]; aliases: string[]; platform_keywords: Record<string, string[]>; metadata: Record<string, unknown> }) => void;
   initialData?: {
     nombre: string;
     tipo: "persona" | "marca" | "institucion" | "tema" | "evento";
@@ -55,6 +55,7 @@ interface EntityFormProps {
     palabras_clave: string[];
     aliases: string[];
     platform_keywords?: Record<string, string[]>;
+    metadata?: Record<string, unknown>;
   };
   isLoading?: boolean;
 }
@@ -68,6 +69,17 @@ export function EntityForm({
 }: EntityFormProps) {
   const [palabrasClave, setPalabrasClave] = useState<string[]>(initialData?.palabras_clave || []);
   const [aliases, setAliases] = useState<string[]>(initialData?.aliases || []);
+  
+  // Positive and Negative Keywords
+  const [positiveKeywords, setPositiveKeywords] = useState<string[]>(
+    (initialData?.metadata?.positive_keywords as string[]) || []
+  );
+  const [negativeKeywords, setNegativeKeywords] = useState<string[]>(
+    (initialData?.metadata?.negative_keywords as string[]) || []
+  );
+  const [newPositive, setNewPositive] = useState("");
+  const [newNegative, setNewNegative] = useState("");
+  
   const [newKeyword, setNewKeyword] = useState("");
   const [newAlias, setNewAlias] = useState("");
   const [platformKeywords, setPlatformKeywords] = useState<Record<string, string[]>>(
@@ -130,12 +142,39 @@ export function EntityForm({
     setAliases(aliases.filter((a) => a !== alias));
   };
 
+  const handleAddPositive = () => {
+    if (newPositive.trim() && !positiveKeywords.includes(newPositive.trim())) {
+      setPositiveKeywords([...positiveKeywords, newPositive.trim()]);
+      setNewPositive("");
+    }
+  };
+
+  const handleRemovePositive = (keyword: string) => {
+    setPositiveKeywords(positiveKeywords.filter((k) => k !== keyword));
+  };
+
+  const handleAddNegative = () => {
+    if (newNegative.trim() && !negativeKeywords.includes(newNegative.trim())) {
+      setNegativeKeywords([...negativeKeywords, newNegative.trim()]);
+      setNewNegative("");
+    }
+  };
+
+  const handleRemoveNegative = (keyword: string) => {
+    setNegativeKeywords(negativeKeywords.filter((k) => k !== keyword));
+  };
+
   const handleSubmit = (data: EntityFormData) => {
     onSubmit({
       ...data,
       palabras_clave: palabrasClave,
       aliases: aliases,
       platform_keywords: platformKeywords,
+      metadata: {
+        ...(initialData?.metadata || {}),
+        positive_keywords: positiveKeywords,
+        negative_keywords: negativeKeywords,
+      },
     });
   };
 
@@ -203,7 +242,8 @@ export function EntityForm({
           </div>
 
           <div className="space-y-2">
-            <Label>Palabras Clave</Label>
+            <Label>Palabras Clave Generales</Label>
+            <p className="text-xs text-muted-foreground">Palabras base para la búsqueda (ej. el nombre de la empresa sin modificadores).</p>
             <div className="flex gap-2">
               <Input
                 value={newKeyword}
@@ -236,6 +276,76 @@ export function EntityForm({
                 ))}
               </div>
             )}
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2 border p-3 rounded-md bg-green-50/30">
+              <Label className="text-green-700">Palabras Positivas (Requeridas)</Label>
+              <p className="text-xs text-muted-foreground">Si se define al menos una, el post DEBE contener alguna de estas palabras para ser válido.</p>
+              <div className="flex gap-2">
+                <Input
+                  value={newPositive}
+                  onChange={(e) => setNewPositive(e.target.value)}
+                  placeholder="Ej: banco, finanzas, app"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddPositive();
+                    }
+                  }}
+                  className="border-green-200 focus-visible:ring-green-400"
+                />
+                <Button type="button" size="icon" variant="outline" className="border-green-200 text-green-700 hover:bg-green-100" onClick={handleAddPositive}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              {positiveKeywords.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {positiveKeywords.map((keyword) => (
+                    <Badge key={keyword} variant="outline" className="bg-green-100 text-green-800 border-green-200 gap-1 text-xs">
+                      {keyword}
+                      <button type="button" onClick={() => handleRemovePositive(keyword)} className="ml-1 hover:text-red-600">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2 border p-3 rounded-md bg-red-50/30">
+              <Label className="text-red-700">Palabras Negativas (Excluir)</Label>
+              <p className="text-xs text-muted-foreground">Si el post contiene CUALQUIERA de estas palabras, será descartado inmediatamente.</p>
+              <div className="flex gap-2">
+                <Input
+                  value={newNegative}
+                  onChange={(e) => setNewNegative(e.target.value)}
+                  placeholder="Ej: fruta, jugo, pie"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleAddNegative();
+                    }
+                  }}
+                  className="border-red-200 focus-visible:ring-red-400"
+                />
+                <Button type="button" size="icon" variant="outline" className="border-red-200 text-red-700 hover:bg-red-100" onClick={handleAddNegative}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+              {negativeKeywords.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {negativeKeywords.map((keyword) => (
+                    <Badge key={keyword} variant="outline" className="bg-red-100 text-red-800 border-red-200 gap-1 text-xs">
+                      {keyword}
+                      <button type="button" onClick={() => handleRemoveNegative(keyword)} className="ml-1 hover:text-red-900">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
 
           <div className="space-y-2">

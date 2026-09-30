@@ -44,6 +44,7 @@ import {
   Copy,
   Zap,
   FlaskConical,
+  Download,
 } from "lucide-react";
 import { format, subDays, isAfter, isBefore, startOfDay, endOfDay } from "date-fns";
 import { es } from "date-fns/locale";
@@ -259,7 +260,9 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
   const [platform, setPlatform] = useState<SelectablePlatform>("twitter");
   const [searchType, setSearchType] = useState("query");
   const [searchValue, setSearchValue] = useState("");
-  const [maxResults, setMaxResults] = useState(25);
+  const [positiveKeywords, setPositiveKeywords] = useState("");
+  const [negativeKeywords, setNegativeKeywords] = useState("");
+  const maxResults = 50;
   const [isSearching, setIsSearching] = useState(false);
   const [jobStatus, setJobStatus] = useState<"idle" | "running" | "completed" | "failed">("idle");
   const [progress, setProgress] = useState(0);
@@ -398,9 +401,85 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
     });
   }, []);
 
-  // Results are now normalized by the backend - sort chronologically
+  const handleExportCSV = () => {
+    if (filteredResults.length === 0) return;
+    
+    // Create CSV header
+    const headers = ["Fecha", "Autor", "Contenido", "Likes", "Comentarios", "URL"];
+    
+    // Create CSV rows
+    const rows = filteredResults.map(r => {
+      const date = r.publishedAt ? format(new Date(r.publishedAt), "yyyy-MM-dd HH:mm") : "";
+      const author = r.author?.name || r.author?.username || "";
+      const content = (r.description || r.title || "").replace(/"/g, '""').replace(/\n/g, ' '); // Escape quotes and newlines
+      const likes = r.metrics?.likes || 0;
+      const comments = r.metrics?.comments || 0;
+      const url = r.url || "";
+      
+      return `"${date}","${author}","${content}","${likes}","${comments}","${url}"`;
+    });
+    
+    const csvContent = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" }); // \uFEFF for Excel UTF-8 BOM
+    
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `resultados_${platform}_${format(new Date(), "yyyyMMdd_HHmm")}.csv`);
+    link.style.visibility = "hidden";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Results are now normalized by the backend - sort chronologically and deduplicate
   const processBackendResults = (items: SocialSearchResult[], idPrefix: string = platform): SocialSearchResult[] => {
-    return (items || [])
+    const seenUrls = new Set<string>();
+    const seenContent = new Set<string>();
+
+    const normalizeText = (s: string) => s
+      .toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9\s]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const posKeywords = positiveKeywords.split(",").map(k => k.trim()).filter(Boolean);
+    const negKeywords = negativeKeywords.split(",").map(k => k.trim()).filter(Boolean);
+
+    const uniqueItems = (items || []).filter(item => {
+      // 1. Keyword Filtering
+      const itemText = normalizeText([item.title, item.description, item.author?.name].filter(Boolean).join(" "));
+      const paddedText = ` ${itemText} `;
+
+      if (negKeywords.length > 0) {
+        const hasNegative = negKeywords.some(neg => paddedText.includes(` ${normalizeText(neg)} `));
+        if (hasNegative) return false;
+      }
+
+      if (posKeywords.length > 0) {
+        const hasPositive = posKeywords.some(pos => paddedText.includes(` ${normalizeText(pos)} `));
+        if (!hasPositive) return false;
+      }
+
+      // 2. Deduplication
+      // Extract the raw URL (sometimes wrapped in objects)
+      const url = typeof item.url === 'string' ? item.url : (item as any).url;
+      
+      // Deduplicate by URL if available
+      if (url && typeof url === 'string' && url.startsWith('http')) {
+        if (seenUrls.has(url)) return false;
+        seenUrls.add(url);
+      } else {
+        // Fallback deduplication by content
+        const contentKey = `${item.title || ''}-${item.description || ''}`;
+        if (contentKey !== '-' && seenContent.has(contentKey)) return false;
+        if (contentKey !== '-') seenContent.add(contentKey);
+      }
+      return true;
+    });
+
+    return uniqueItems
       .map((item, idx) => ({
         ...item,
         id: item.id || `${idPrefix}-${idx}-${Date.now()}`,
@@ -727,8 +806,15 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
       setJobStatus("failed");
       setIsSearching(false); // Stop the spinner on error
       setPollingStartTime(null); // Reset polling timer
+      
+      const errMsg = error instanceof Error ? error.message : "Error desconocido al verificar estado";
+      toast({
+        title: "Error de conexión o validación",
+        description: errMsg,
+        variant: "destructive",
+      });
     }
-  }, [platform, config.label, toast, currentJobId, updateJob, saveResults, refetchJobs, dateFilterEnabled, dateFrom, dateTo, pollingStartTime, MAX_POLLING_DURATION_MS]);
+  }, [platform, config.label, toast, currentJobId, updateJob, saveResults, refetchJobs, dateFilterEnabled, dateFrom, dateTo, pollingStartTime, MAX_POLLING_DURATION_MS, positiveKeywords, negativeKeywords]);
 
   // YouTube parallel status checker for combined Videos + Shorts search
   const checkYouTubeParallelStatus = useCallback(async (
@@ -1624,7 +1710,7 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
         </div>
 
         {/* Search Controls */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="space-y-2">
             <div className="flex items-center gap-1">
               <Label>Tipo de búsqueda</Label>
@@ -1652,21 +1738,6 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
           </div>
 
           <div className="space-y-2">
-            <Label>Resultados máximos</Label>
-            <Select value={maxResults.toString()} onValueChange={(v) => setMaxResults(parseInt(v))}>
-              <SelectTrigger className="bg-background">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent className="bg-popover">
-                <SelectItem value="10">10 resultados</SelectItem>
-                <SelectItem value="25">25 resultados</SelectItem>
-                <SelectItem value="50">50 resultados</SelectItem>
-                <SelectItem value="100">100 resultados</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
             <div className="flex items-center gap-1">
               <Label>Búsqueda / URL de empresa o término</Label>
               <Tooltip>
@@ -1684,6 +1755,48 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
               onChange={(e) => setSearchValue(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && !isSearching && handleSearch()}
               className="bg-background"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-1">
+              <Label>Palabras Positivas (Opcional)</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <HelpCircle className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[280px]">
+                  <p>Si agregas palabras aquí separadas por comas, los resultados DEBEN contener al menos una de ellas para ser mostrados.</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              placeholder="Ej: banco, inversión"
+              value={positiveKeywords}
+              onChange={(e) => setPositiveKeywords(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !isSearching && handleSearch()}
+              className="bg-background"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-1">
+              <Label>Palabras Negativas (Opcional)</Label>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <HelpCircle className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-[280px]">
+                  <p>Si agregas palabras aquí separadas por comas, cualquier resultado que contenga alguna de ellas será descartado inmediatamente.</p>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+            <Input
+              placeholder="Ej: fraude, queja"
+              value={negativeKeywords}
+              onChange={(e) => setNegativeKeywords(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !isSearching && handleSearch()}
+              className="bg-background border-destructive/30 focus-visible:ring-destructive/30"
             />
           </div>
           
@@ -2069,6 +2182,10 @@ export const SocialMediaSearch = ({ projectId, onResultsSaved }: SocialMediaSear
                 {filteredResults.length} resultados de {config.label}
                 <span className="text-xs">• Ordenados por fecha (más recientes primero)</span>
               </p>
+              <Button variant="outline" size="sm" onClick={handleExportCSV} className="gap-2">
+                <Download className="h-4 w-4" />
+                Exportar CSV
+              </Button>
             </div>
 
             <ScrollArea className="h-[400px]">

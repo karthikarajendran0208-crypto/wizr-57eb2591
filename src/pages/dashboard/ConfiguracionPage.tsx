@@ -97,14 +97,7 @@ const ConfiguracionPage = () => {
     }
   };
 
-  const handleCreateEntity = (data: {
-    nombre: string;
-    tipo: EntityType;
-    descripcion?: string;
-    palabras_clave: string[];
-    aliases: string[];
-    platform_keywords: Record<string, string[]>;
-  }) => {
+  const handleCreateEntity = (data: any) => {
     if (!selectedProject) return;
     
     createEntity({
@@ -115,14 +108,7 @@ const ConfiguracionPage = () => {
     });
   };
 
-  const handleUpdateEntity = (data: {
-    nombre: string;
-    tipo: EntityType;
-    descripcion?: string;
-    palabras_clave: string[];
-    aliases: string[];
-    platform_keywords: Record<string, string[]>;
-  }) => {
+  const handleUpdateEntity = (data: any) => {
     if (!editingEntity) return;
     
     updateEntity({
@@ -424,6 +410,7 @@ const ConfiguracionPage = () => {
             palabras_clave: editingEntity.palabras_clave,
             aliases: editingEntity.aliases,
             platform_keywords: editingEntity.platform_keywords || {},
+            metadata: editingEntity.metadata,
           }}
           isLoading={isUpdating}
         />

@@ -37,6 +37,7 @@ export interface Entity {
   palabras_clave: string[];
   aliases: string[];
   platform_keywords?: Record<string, string[]>;
+  metadata?: Record<string, unknown>;
   activo: boolean;
   created_at: string;
 }

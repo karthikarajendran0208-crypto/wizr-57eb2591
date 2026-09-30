@@ -143,11 +143,15 @@ serve(async (req) => {
         let totalMentionsSaved = 0;
         const allSavedMentions: SavedMention[] = [];
 
+        // Create an array of promises for concurrent execution
+        const searchPromises = [];
+
         // Process each entity
         for (const entity of entities as Entity[]) {
           for (const platform of schedule.platforms) {
             const searchQuery = buildSearchQuery(entity, platform);
-            try {
+            
+            const searchPromise = (async () => {
               let platformResults: Array<{
                 url: string;
                 title?: string;
@@ -163,7 +167,8 @@ serve(async (req) => {
                 platformResults = await searchSocial(apifyToken, platform, searchQuery, schedule.max_results_per_platform);
               }
 
-              totalMentionsFound += platformResults.length;
+              let savedMentions: SavedMention[] = [];
+              let foundCount = platformResults.length;
 
               if (platformResults.length > 0) {
                 // Post-validate: only keep results whose content actually mentions a keyword
@@ -196,16 +201,30 @@ serve(async (req) => {
                     .select("id, project_id, entity_id, title, description, url");
 
                   if (!saveError && savedData) {
-                    totalMentionsSaved += savedData.length;
-                    allSavedMentions.push(...savedData);
+                    savedMentions = savedData;
                   }
                 }
               }
 
               console.log(`  ${entity.nombre} on ${platform}: ${platformResults.length} results`);
-            } catch (platformError) {
-              console.error(`Error searching ${platform} for ${entity.nombre}:`, platformError);
-            }
+              return { foundCount, savedMentions };
+            })();
+
+            searchPromises.push(searchPromise);
+          }
+        }
+
+        // Wait for all searches to complete concurrently
+        const searchOutcomes = await Promise.allSettled(searchPromises);
+
+        // Aggregate results
+        for (const outcome of searchOutcomes) {
+          if (outcome.status === "fulfilled") {
+            totalMentionsFound += outcome.value.foundCount;
+            totalMentionsSaved += outcome.value.savedMentions.length;
+            allSavedMentions.push(...outcome.value.savedMentions);
+          } else {
+            console.error(`Error during concurrent search:`, outcome.reason);
           }
         }
 
@@ -268,10 +287,25 @@ serve(async (req) => {
     );
   } catch (error) {
     console.error("scheduled-unified-search error:", error);
+    
+    // Properly format the error whether it's an Error instance, string, or Supabase error object
+    let errorMessage = "Unknown error";
+    let errorDetails = null;
+    
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === "string") {
+      errorMessage = error;
+    } else if (typeof error === "object" && error !== null) {
+      errorMessage = (error as any).message || "Unknown error object";
+      errorDetails = error;
+    }
+
     return new Response(
       JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: errorMessage,
+        details: errorDetails
       }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
@@ -447,6 +481,16 @@ function calculateNextRun(frequency: string, fromTime: Date): Date {
 
 // ==================== RELEVANCE FILTER ====================
 
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Post-validates that a mention's content actually contains at least one
  * of the entity's keywords. Prevents false positives from scrapers that
@@ -456,12 +500,14 @@ function contentMatchesKeywords(
   item: { title?: string; description?: string; url?: string },
   entity: Entity
 ): boolean {
-  const text = [item.title, item.description, item.url]
+  const rawText = [item.title, item.description, item.url]
     .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
+    .join(" ");
 
-  if (!text) return false;
+  if (!rawText.trim()) return false;
+
+  const normalizedText = normalizeText(rawText);
+  const paddedText = ` ${normalizedText} `;
 
   // Collect all keywords: nombre, aliases, palabras_clave
   const keywords: string[] = [
@@ -477,10 +523,13 @@ function contentMatchesKeywords(
     }
   }
 
-  // At least one keyword (2+ chars) must appear in the text
+  // At least one keyword (2+ chars) must appear in the text as a complete word
   return keywords
     .filter(k => k.length >= 2)
-    .some(keyword => text.includes(keyword.toLowerCase()));
+    .some(keyword => {
+      const cleanKeyword = normalizeText(keyword);
+      return paddedText.includes(` ${cleanKeyword} `);
+    });
 }
 
 // ==================== SEARCH FUNCTIONS ====================

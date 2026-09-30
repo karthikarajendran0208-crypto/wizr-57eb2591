@@ -528,8 +528,9 @@ function buildFallbackFindings(
     }
 
     const meta = mention.raw_metadata || {};
-    const authorName = (meta.author || meta.author_name || meta.authorName || meta.author_username || meta.authorUsername) as string | undefined;
-    if (authorName) {
+    const rawAuth = meta.author as any;
+    const authorName = (typeof rawAuth === "string" ? rawAuth : (rawAuth?.name || rawAuth?.username || meta.author_name || meta.authorName || meta.author_username || meta.authorUsername)) as string | undefined;
+    if (authorName && typeof authorName === "string") {
       const key = `${authorName}@@${source}`;
       // Interacciones reales: likes + comments + shares. Las views NO son interacciones (inflan en órdenes de magnitud videos virales antiguos como VEVO).
       const engagement = Number(meta.likes || 0) + Number(meta.comments || 0) + Number(meta.shares || 0);
@@ -777,9 +778,10 @@ function buildDetailedMentionAnalysis(mentions: Mention[]): string {
 
   const authorMap: Record<string, { name: string; platform: string; count: number; engagement: number; sentiment: string[] }> = {};
   mentions.forEach(m => {
-    const meta = m.raw_metadata;
-    const authorName = (meta?.author || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername) as string | undefined;
-    if (!authorName) return;
+    const meta = m.raw_metadata as Record<string, unknown> | null;
+    const rawAuth = meta?.author as any;
+    const authorName = (typeof rawAuth === "string" ? rawAuth : (rawAuth?.name || rawAuth?.username || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername)) as string | undefined;
+    if (!authorName || typeof authorName !== "string") return;
     const key = `${authorName}@${m.source_domain || "unknown"}`;
     if (!authorMap[key]) {
       authorMap[key] = { name: authorName, platform: m.source_domain || "unknown", count: 0, engagement: 0, sentiment: [] };
@@ -904,8 +906,9 @@ serve(async (req) => {
       const d = (m.published_at || m.created_at || "").split("T")[0];
       if (d) gtByDate[d] = (gtByDate[d] || 0) + 1;
       const meta = m.raw_metadata as Record<string, unknown> | null;
-      const author = (meta?.author || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername) as string | undefined;
-      if (author) gtByAuthor[author] = (gtByAuthor[author] || 0) + 1;
+      const rawAuth = meta?.author as any;
+      const author = (typeof rawAuth === "string" ? rawAuth : (rawAuth?.name || rawAuth?.username || meta?.author_name || meta?.authorName || meta?.author_username || meta?.authorUsername)) as string | undefined;
+      if (author && typeof author === "string") gtByAuthor[author] = (gtByAuthor[author] || 0) + 1;
     });
     const gtDates = Object.entries(gtByDate).sort((a, b) => b[1] - a[1]);
     const gtPlatforms = Object.entries(gtByPlatform).sort((a, b) => b[1] - a[1]);

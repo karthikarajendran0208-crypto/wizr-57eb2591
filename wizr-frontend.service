@@ -1,0 +1,15 @@
+[Unit]
+Description=Wizr Frontend Dev Service
+After=network.target
+
+[Service]
+Type=simple
+User=karthika
+WorkingDirectory=/home/karthika/wizr-57eb2591
+ExecStart=/bin/bash /home/karthika/wizr-57eb2591/start-service.sh
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=development
+
+[Install]
+WantedBy=multi-user.target

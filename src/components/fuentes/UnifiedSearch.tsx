@@ -10,11 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
+import { useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { firecrawlApi, type EntityForSearch } from "@/lib/api/firecrawl";
-import { apifyApi } from "@/lib/api/apify";
+import { searchEngine } from "@/lib/services/searchEngine";
 import { cn } from "@/lib/utils";
-import { deduplicateBatch, type DuplicateCandidate } from "@/lib/utils/semanticDedup";
 import {
   Search,
   Zap,
@@ -35,7 +34,7 @@ import {
   ExternalLink,
   TrendingUp,
 } from "lucide-react";
-import { format } from "date-fns";
+import { format, subDays } from "date-fns";
 import { es } from "date-fns/locale";
 import type { Entity } from "@/hooks/useEntities";
 
@@ -137,6 +136,7 @@ const getEntityIcon = (tipo: string) => {
 
 export function UnifiedSearch({ projectId, entities, onSearchComplete }: UnifiedSearchProps) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   
   // Selection state
   const [selectedEntities, setSelectedEntities] = useState<Set<string>>(new Set(entities.map(e => e.id)));
@@ -148,7 +148,7 @@ export function UnifiedSearch({ projectId, entities, onSearchComplete }: Unified
   const [isRunning, setIsRunning] = useState(false);
   const [jobs, setJobs] = useState<SearchJob[]>([]);
   const [showDetails, setShowDetails] = useState(false);
-  const [existingMentions, setExistingMentions] = useState<DuplicateCandidate[]>([]);
+  const [existingMentions, setExistingMentions] = useState<any[]>([]);
   const [duplicatesSkipped, setDuplicatesSkipped] = useState(0);
 
   // Load existing mentions for semantic deduplication
@@ -220,13 +220,15 @@ export function UnifiedSearch({ projectId, entities, onSearchComplete }: Unified
 
   // Build search query from entity keywords
   const buildSearchQuery = (entity: Entity, platform?: string): string => {
+    let baseQuery = "";
+    
     // 1. Check platform-specific keywords first
     const pk = (entity as any).platform_keywords as Record<string, string[]> | undefined;
     if (pk && platform && pk[platform] && pk[platform].length > 0) {
-      return pk[platform].join(", ");
+      baseQuery = pk[platform].join(", ");
     }
     // 2. Fallback to general keywords
-    if (entity.palabras_clave && entity.palabras_clave.length > 0) {
+    else if (entity.palabras_clave && entity.palabras_clave.length > 0) {
       // For Twitter: wrap multi-word terms in quotes for exact matching, add name variations
       if (platform === "twitter") {
         const terms = new Set<string>();
@@ -241,16 +243,41 @@ export function UnifiedSearch({ projectId, entities, onSearchComplete }: Unified
         entity.aliases?.forEach(alias => {
           if (alias.trim()) terms.add(alias.includes(" ") ? `"${alias}"` : alias);
         });
-        return Array.from(terms).join(", ");
+        // Join with OR for a single advanced query, instead of commas
+        baseQuery = `(${Array.from(terms).join(" OR ")})`;
+      } else {
+        baseQuery = entity.palabras_clave.join(", ");
       }
-      return entity.palabras_clave.join(", ");
     }
     // 3. Fallback to name + aliases
-    const terms = [entity.nombre, ...entity.aliases].filter(Boolean);
-    if (platform === "twitter") {
-      return terms.map(t => t.includes(" ") ? `"${t}"` : t).join(", ");
+    else {
+      const terms = [entity.nombre, ...entity.aliases].filter(Boolean);
+      if (platform === "twitter") {
+        baseQuery = `(${terms.map(t => t.includes(" ") ? `"${t}"` : t).join(" OR ")})`;
+      } else {
+        baseQuery = terms.join(", ");
+      }
     }
-    return terms.join(", ");
+
+    // Append positive/negative modifiers for Twitter
+    const metadata = (entity as any).metadata || {};
+    const posKeywords = (metadata.positive_keywords as string[]) || [];
+    const negKeywords = (metadata.negative_keywords as string[]) || [];
+
+    if (platform === "twitter") {
+      let finalQuery = baseQuery;
+      if (posKeywords.length > 0) {
+        const posStr = posKeywords.map(k => k.includes(" ") ? `"${k}"` : k).join(" OR ");
+        finalQuery += ` (${posStr})`;
+      }
+      if (negKeywords.length > 0) {
+        const negStr = negKeywords.map(k => k.includes(" ") ? `-"${k}"` : `-${k}`).join(" ");
+        finalQuery += ` ${negStr}`;
+      }
+      return finalQuery;
+    }
+
+    return baseQuery;
   };
 
   // Run unified search
@@ -314,189 +341,52 @@ export function UnifiedSearch({ projectId, entities, onSearchComplete }: Unified
       updateJob(job.id, { status: "running" });
 
       try {
-        let results: Array<{ url: string; title?: string; description?: string; source_domain?: string; published_at?: string; date_confidence?: string; author?: string; authorUsername?: string; authorUrl?: string; likes?: number; comments?: number; shares?: number; views?: number }> = [];
+        const targetPlatform = job.platform === "news" ? "google_news" : job.platform;
+        const searchQuery = buildSearchQuery(entity, job.platform);
+        const dateFrom =
+          timeRange === "day"
+            ? subDays(new Date(), 1)
+            : timeRange === "week"
+            ? subDays(new Date(), 7)
+            : subDays(new Date(), 30);
 
-        if (job.platform === "news") {
-          // Use Firecrawl for news
-          const entityForSearch: EntityForSearch = {
-            id: entity.id,
-            nombre: entity.nombre,
-            palabras_clave: entity.palabras_clave,
-            aliases: entity.aliases,
-          };
-          
-          const response = await firecrawlApi.searchMultipleEntities([entityForSearch], timeRange, maxResultsPerPlatform);
-          
-          if (response.success && response.data) {
-            results = response.data.map(r => {
-              const enriched = r as unknown as { publishedAt?: string; dateConfidence?: string };
-              return {
-                url: r.url,
-                title: r.title,
-                description: r.description,
-                source_domain: r.url ? new URL(r.url).hostname.replace("www.", "") : undefined,
-                published_at: enriched.publishedAt || r.metadata?.publishedDate,
-                date_confidence: enriched.dateConfidence,
-              };
-            });
-          }
-        } else {
-          // Use Apify for social platforms through the dedicated client.
-          const searchQuery = buildSearchQuery(entity, job.platform);
-          const scrapeResult = await apifyApi.startScrape({
-            platform: job.platform,
-            query: searchQuery,
-            maxResults: maxResultsPerPlatform,
-          });
-
-          if (!scrapeResult.success || !scrapeResult.data?.runId) {
-            throw new Error(scrapeResult.error || scrapeResult.data?.error || "No se pudo iniciar la búsqueda");
-          }
-
-          // Poll for completion
-          let attempts = 0;
-          const maxAttempts = 60; // 2 minutes max
-
-          while (attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
-            const statusResult = await apifyApi.checkStatus(
-              scrapeResult.data.runId,
-              job.platform,
-              searchQuery,
-            );
-
-            if (!statusResult.success || !statusResult.data) {
-              throw new Error(statusResult.error || "No se pudo consultar el estado de la búsqueda");
+        const res = await searchEngine.executeSearch({
+          query: searchQuery,
+          platforms: [targetPlatform],
+          dateFilterEnabled: true,
+          dateFrom,
+          dateTo: new Date(),
+          projectId,
+          entityId: entity.id,
+          maxResults: maxResultsPerPlatform,
+          strictMatching: true,
+          onJobStatusChange: (_plat, status) => {
+            if (status.status === "RUNNING") {
+              updateJob(job.id, { status: "running" });
             }
-
-            const statusData = statusResult.data;
-
-            if (statusData.status === "SUCCEEDED" || statusData.status === "completed") {
-              results = (statusData.items || []).map((r: Record<string, unknown>) => {
-                const item = r as Record<string, unknown>;
-                const authorObj = item.author as Record<string, unknown> | undefined;
-                const metricsObj = item.metrics as Record<string, unknown> | undefined;
-                return {
-                  url: String(item.url || ""),
-                  title: item.title ? String(item.title) : undefined,
-                  description: item.description ? String(item.description) : (item.text ? String(item.text) : undefined),
-                  source_domain: job.platform,
-                  published_at: item.publishedAt ? String(item.publishedAt) : (item.timestamp ? String(item.timestamp) : undefined),
-                  author: authorObj?.name ? String(authorObj.name) : undefined,
-                  authorUsername: authorObj?.username ? String(authorObj.username) : undefined,
-                  authorUrl: authorObj?.url ? String(authorObj.url) : undefined,
-                  likes: Number(metricsObj?.likes || 0) || undefined,
-                  comments: Number(metricsObj?.comments || 0) || undefined,
-                  shares: Number(metricsObj?.shares || 0) || undefined,
-                  views: Number(metricsObj?.views || 0) || undefined,
-                };
-              });
-              break;
-            }
-
-            if (statusData.status === "FAILED" || statusData.status === "failed" || statusData.status === "ABORTED" || statusData.status === "TIMED-OUT") {
-              throw new Error(statusData.error || `Search ${statusData.status.toLowerCase()}`);
-            }
-
-            attempts++;
-          }
-
-          if (attempts >= maxAttempts) {
-            throw new Error("Search timeout");
-          }
-        }
-
-        // Post-validate: token-based filter so frases largas (ej. "Turismo en León, Guanajuato")
-        // no descarten todo. Cualquier token significativo (≥4 chars) basta.
-        const STOPWORDS = new Set(["para","con","los","las","del","una","por","que","sus","sin","mas","muy","como","este","esta","entre","sobre","desde","hasta"]);
-        const tokenize = (s: string) => s
-          .toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-          .split(/[^a-z0-9]+/)
-          .filter(t => t.length >= 4 && !STOPWORDS.has(t));
-
-        const rawKeywords = [
-          entity.nombre,
-          ...(entity.aliases || []),
-          ...(entity.palabras_clave || []),
-        ].filter(Boolean);
-
-        const tokenSet = new Set<string>();
-        rawKeywords.forEach(k => tokenize(k).forEach(t => tokenSet.add(t)));
-
-        const relevantResults = tokenSet.size === 0 ? results : results.filter(r => {
-          const text = [r.title, r.description, r.url].filter(Boolean).join(" ").toLowerCase()
-            .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-          for (const t of tokenSet) {
-            if (text.includes(t)) return true;
-          }
-          return false;
+          },
         });
 
-        const filtered = results.length - relevantResults.length;
-        if (filtered > 0) {
-          console.log(`Filtered ${filtered}/${results.length} irrelevant results for ${entity.nombre} (tokens: ${Array.from(tokenSet).join(",")})`);
+        const found = res.results.length;
+        totalFound += found;
+        totalSaved += res.savedCount;
+
+        if (res.statuses[targetPlatform]?.status === "FAILED") {
+          failedCount += 1;
+          updateJob(job.id, {
+            status: "failed",
+            error: res.statuses[targetPlatform]?.error || "Error en la búsqueda",
+          });
+        } else {
+          successCount += 1;
+          updateJob(job.id, { status: "completed", resultCount: found });
         }
-
-        // Save results to mentions table with semantic deduplication
-        if (relevantResults.length > 0) {
-          const mentionsToCheck = relevantResults.map(r => ({
-            project_id: projectId,
-            url: r.url,
-            title: r.title || null,
-            description: r.description || null,
-            source_domain: r.source_domain || null,
-            entity_id: entity.id,
-            matched_keywords: entity.palabras_clave || [],
-            published_at: r.published_at || null,
-            raw_metadata: {
-              ...(r.date_confidence ? { date_confidence: r.date_confidence } : { date_confidence: r.published_at ? "high" : "unknown" }),
-              ...(r.author ? { author: r.author } : {}),
-              ...(r.authorUsername ? { authorUsername: r.authorUsername } : {}),
-              ...(r.authorUrl ? { authorUrl: r.authorUrl } : {}),
-              ...(r.likes != null ? { likes: r.likes } : {}),
-              ...(r.comments != null ? { comments: r.comments } : {}),
-              ...(r.shares != null ? { shares: r.shares } : {}),
-              ...(r.views != null ? { views: r.views } : {}),
-            },
-          }));
-
-          // Apply semantic deduplication
-          const { unique, duplicates } = deduplicateBatch(
-            mentionsToCheck,
-            allExistingMentions,
-            0.7 // 70% similarity threshold
-          );
-
-          totalDuplicatesSkipped += duplicates.length;
-
-          if (unique.length > 0) {
-            const { error: saveError, data: savedData } = await supabase
-              .from("mentions")
-              .upsert(unique, { onConflict: "project_id,url" })
-              .select("id, title, description, url");
-
-            if (saveError) {
-              console.error(`Save error for ${entity.nombre}/${job.platform}:`, saveError);
-            } else {
-              totalSaved += unique.length;
-              if (savedData) {
-                allExistingMentions.push(...savedData);
-              }
-            }
-          }
-        }
-
-        totalFound += results.length;
-        successCount += 1;
-        updateJob(job.id, { status: "completed", resultCount: results.length });
       } catch (error) {
         console.error(`Error in job ${job.id}:`, error);
         failedCount += 1;
-        updateJob(job.id, { 
-          status: "failed", 
-          error: error instanceof Error ? error.message : "Unknown error" 
+        updateJob(job.id, {
+          status: "failed",
+          error: error instanceof Error ? error.message : "Unknown error",
         });
       }
     });
@@ -505,6 +395,8 @@ export function UnifiedSearch({ projectId, entities, onSearchComplete }: Unified
     await Promise.allSettled(promises);
 
     setIsRunning(false);
+    queryClient.invalidateQueries({ queryKey: ["mentions", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["mention-stats", projectId] });
     setDuplicatesSkipped(totalDuplicatesSkipped);
 
     toast({

@@ -4,7 +4,7 @@
 // Used by: apify-results, apify-status, scheduled-unified-search
 // ============================================================
 
-export type Platform = "twitter" | "facebook" | "tiktok" | "instagram" | "linkedin" | "youtube" | "youtube_shorts" | "reddit" | "reddit_comments";
+export type Platform = "twitter" | "facebook" | "tiktok" | "instagram" | "linkedin" | "youtube" | "youtube_shorts" | "reddit" | "reddit_comments" | "google_news";
 
 export interface NormalizedResult {
   id: string;
@@ -527,6 +527,28 @@ function normalizeRedditComment(item: Record<string, unknown>, index: number): N
   };
 }
 
+function normalizeGoogleNews(item: Record<string, unknown>, index: number): NormalizedResult {
+  const title = String(get(item, "title") || "");
+  const snippet = String(get(item, "snippet") || get(item, "description") || "");
+  const link = String(get(item, "link") || get(item, "url") || "");
+  const source = String(get(item, "source") || get(item, "publisher") || "");
+  const publishedDate = get(item, "published_date") || get(item, "date") || get(item, "publishedAt");
+
+  return {
+    id: `google_news-${index}-${Date.now()}`,
+    platform: "google_news" as Platform,
+    title,
+    description: snippet || title,
+    author: { name: source, username: source, url: "" },
+    metrics: { likes: 0, comments: 0, shares: 0, engagement: 0 },
+    publishedAt: parseDate(publishedDate),
+    url: link,
+    contentType: "article",
+    hashtags: [],
+    raw: item,
+  };
+}
+
 // ==================== MAIN NORMALIZER ====================
 
 export function normalizeResults(items: unknown[], platform: Platform | string): NormalizedResult[] {
@@ -541,6 +563,7 @@ export function normalizeResults(items: unknown[], platform: Platform | string):
       case "youtube": return normalizeYouTube(data, index);
       case "youtube_shorts": return normalizeYouTubeShort(data, index);
       case "reddit": return normalizeReddit(data, index);
+      case "google_news": return normalizeGoogleNews(data, index);
       case "reddit_comments": {
         // Check if this is from easyapi/reddit-comments-search-scraper (has comment_content)
         if (data.comment_content || data.contentText) {

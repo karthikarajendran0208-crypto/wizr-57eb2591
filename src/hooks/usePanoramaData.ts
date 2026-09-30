@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useMemo } from "react";
-import { subDays, format, eachDayOfInterval, startOfDay } from "date-fns";
+import { subDays, format, eachDayOfInterval, startOfDay, isAfter } from "date-fns";
 
 const MENTIONS_PAGE_SIZE = 1000;
 
@@ -10,13 +10,6 @@ function getMentionEffectiveDate(mention: {
   created_at: string;
 }) {
   return new Date(mention.published_at ?? mention.created_at);
-}
-
-function buildDateFilter(start: Date, end: Date) {
-  const startIso = start.toISOString();
-  const endIso = end.toISOString();
-
-  return `and(published_at.gte.${startIso},published_at.lte.${endIso}),and(published_at.is.null,created_at.gte.${startIso},created_at.lte.${endIso})`;
 }
 
 export interface PanoramaMetrics {
@@ -62,8 +55,6 @@ export function usePanoramaData(
         published_at: string | null;
       }> = [];
 
-      const dateFilter = buildDateFilter(effectiveStart, effectiveEnd);
-
       for (let page = 0; ; page += 1) {
         const from = page * MENTIONS_PAGE_SIZE;
         const to = from + MENTIONS_PAGE_SIZE - 1;
@@ -73,8 +64,7 @@ export function usePanoramaData(
           .select("id, sentiment, source_domain, created_at, published_at")
           .eq("project_id", projectId)
           .eq("is_archived", false)
-          .or(dateFilter)
-          .order("created_at", { ascending: false })
+          .order("published_at", { ascending: false, nullsFirst: false })
           .range(from, to);
 
         if (error) throw error;
@@ -85,9 +75,14 @@ export function usePanoramaData(
         if (data.length < MENTIONS_PAGE_SIZE) break;
       }
 
+      const startBound = startOfDay(effectiveStart);
+      const endBound = new Date(effectiveEnd);
+      endBound.setHours(23, 59, 59, 999);
+
       return allMentions.filter((mention) => {
         const effectiveDate = getMentionEffectiveDate(mention);
-        return effectiveDate >= effectiveStart && effectiveDate <= effectiveEnd;
+        if (isNaN(effectiveDate.getTime())) return false;
+        return !isAfter(startBound, effectiveDate) && !isAfter(effectiveDate, endBound);
       });
     },
     enabled: !!projectId,

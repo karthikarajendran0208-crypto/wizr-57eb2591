@@ -96,9 +96,19 @@ const STOPWORDS = new Set([
   "the","of","and","or","in","on","at","to","for","a","an","is","it"
 ]);
 
+function normalizeText(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // Extract meaningful keyword tokens (≥3 chars, not stopwords) for relevance scoring
 function extractKeywordTokens(query: string): string[] {
-  const cleaned = query.replace(/"/g, "").toLowerCase();
+  const cleaned = normalizeText(query.replace(/"/g, ""));
   return cleaned.split(/\s+/).filter(t => t.length >= 3 && !STOPWORDS.has(t));
 }
 
@@ -106,11 +116,19 @@ function extractKeywordTokens(query: string): string[] {
 // (or all of them if the query has fewer than 2). This prevents single-token false positives
 // like "Camino de Guanajuato" matching a query for "Las Libres Guanajuato".
 function isRelevantResult(title: string, description: string, channelTitle: string, keywords: string[], originalQuery: string): boolean {
-  const haystack = `${title} ${description} ${channelTitle}`.toLowerCase();
-  const phrase = originalQuery.replace(/"/g, "").trim().toLowerCase();
-  if (phrase.length >= 4 && haystack.includes(phrase)) return true;
+  const normalizedHaystack = normalizeText(`${title} ${description} ${channelTitle}`);
+  const paddedHaystack = ` ${normalizedHaystack} `;
+  
+  const phrase = normalizeText(originalQuery.replace(/"/g, ""));
+  
+  if (phrase.length >= 4 && paddedHaystack.includes(` ${phrase} `)) return true;
   if (keywords.length === 0) return true;
-  const matched = keywords.filter(kw => haystack.includes(kw)).length;
+  
+  const matched = keywords.filter(kw => {
+    const cleanKw = normalizeText(kw);
+    return paddedHaystack.includes(` ${cleanKw} `);
+  }).length;
+  
   const required = Math.min(keywords.length, 2);
   return matched >= required;
 }
